@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install playwright beautifulsoup4
-          playwright install --with-deps chromium  
+          playwright install --with-deps chromium
 
       - name: Run crawler
         run: python crawl.py
