@@ -19,9 +19,10 @@ from playwright.sync_api import sync_playwright
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
 
-LISTING_URL = 'https://www.nanum.com/site/poet_walk'
-BOARD_PATH  = '/site/poet_walk'
-MID         = 'poet_walk'
+LISTING_URL      = 'https://www.nanum.com/site/poet_walk'
+LISTING_URL_PAGE = 'https://www.nanum.com/site/index.php?mid=poet_walk&page={}'
+BOARD_PATH       = '/site/poet_walk'
+MID              = 'poet_walk'
 PAGE_DELAY  = 0.3    # 페이지 간 딜레이(초)
 OUTPUT_FILE = 'images.json'
 
@@ -114,7 +115,7 @@ def fetch_new_post_urls(page, known_urls: set[str]) -> list[str]:
     page_num    = 1
 
     while True:
-        page_url = LISTING_URL if page_num == 1 else f'{LISTING_URL}?page={page_num}'
+        page_url = LISTING_URL if page_num == 1 else LISTING_URL_PAGE.format(page_num)
         print(f'  목록 페이지 {page_num} 크롤링…')
 
         entries = fetch_page_post_urls(page, page_url)
