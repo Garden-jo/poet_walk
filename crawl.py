@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-nanum.com/site/poet_walk 이미지 크롤러 (Playwright 버전)
-cupid.js JS 챌린지를 헤드리스 Chromium으로 통과합니다.
+nanum.com/site/poet_walk 이미지 크롤러 (Playwright + 증분 업데이트)
+
+- 첫 실행: 전체 페이지 순회 → 모든 게시물 수집
+- 이후 실행: 기존 images.json에 없는 새 게시물만 수집 후 앞에 추가
 """
 
 import json
+import os
 import re
 import sys
 import time
@@ -19,27 +22,44 @@ from playwright.sync_api import sync_playwright
 LISTING_URL = 'https://www.nanum.com/site/poet_walk'
 BOARD_PATH  = '/site/poet_walk'
 MID         = 'poet_walk'
-MAX_POSTS   = 50
-PAGE_DELAY  = 0.3   # 페이지 간 딜레이(초)
+PAGE_DELAY  = 0.3    # 페이지 간 딜레이(초)
+OUTPUT_FILE = 'images.json'
 
 EXCLUDE_KEYWORDS = ['logo', 'icon', 'spacer', 'blank.', 'pixel.']
-
 CONTENT_SELECTORS = [
     '.xe_content', '.read_body', '.view_content',
     '.board_view', 'article', '.post-content', '.content_area', '#content',
 ]
 
-# ── 목록 페이지 → 게시물 URL ──────────────────────────────────────────────────
+# ── 기존 데이터 로드 ──────────────────────────────────────────────────────────
 
-def fetch_post_urls(page) -> list[str]:
-    page.goto(LISTING_URL, wait_until='networkidle', timeout=30000)
+def load_existing() -> tuple[list[dict], set[str]]:
+    """기존 images.json 로드. 반환: (기존 목록, 알려진 post_url 집합)"""
+    if not os.path.exists(OUTPUT_FILE):
+        return [], set()
+    try:
+        with open(OUTPUT_FILE, encoding='utf-8') as f:
+            data = json.load(f)
+        existing = data.get('images', [])
+        known    = {item['post_url'] for item in existing}
+        print(f'  기존 데이터: {len(existing)}개')
+        return existing, known
+    except Exception as e:
+        print(f'  기존 파일 읽기 실패: {e}', file=sys.stderr)
+        return [], set()
+
+# ── 목록 한 페이지 → 게시물 URL 추출 ─────────────────────────────────────────
+
+def fetch_page_post_urls(page, page_url: str) -> list[tuple[int, str]]:
+    """목록 한 페이지에서 (post_id, post_url) 목록 반환"""
+    page.goto(page_url, wait_until='networkidle', timeout=30000)
     html      = page.content()
     soup      = BeautifulSoup(html, 'html.parser')
-    base      = urlparse(LISTING_URL)
+    base      = urlparse(page_url)
     pretty_re = re.compile(r'^' + re.escape(BOARD_PATH) + r'/(\d+)')
 
-    seen         = set()
-    post_entries = []
+    entries = []
+    seen    = set()
 
     for a in soup.find_all('a', href=True):
         href = a['href'].strip()
@@ -81,18 +101,51 @@ def fetch_post_urls(page) -> list[str]:
         if 'document_srl' in parsed.query:
             resolved = f'{base.scheme}://{base.netloc}{BOARD_PATH}/{post_id}'
 
-        post_entries.append((post_id, resolved))
+        entries.append((post_id, resolved))
 
-    post_entries.sort(key=lambda x: x[0], reverse=True)
-    return [url for _, url in post_entries[:MAX_POSTS]]
+    entries.sort(key=lambda x: x[0], reverse=True)
+    return entries
 
+# ── 전체 목록 순회 (증분) ─────────────────────────────────────────────────────
+
+def fetch_new_post_urls(page, known_urls: set[str]) -> list[str]:
+    """known_urls에 없는 새 게시물 URL만 반환 (최신순)"""
+    new_entries = []
+    page_num    = 1
+
+    while True:
+        page_url = LISTING_URL if page_num == 1 else f'{LISTING_URL}?page={page_num}'
+        print(f'  목록 페이지 {page_num} 크롤링…')
+
+        entries = fetch_page_post_urls(page, page_url)
+
+        if not entries:
+            print(f'  → 게시물 없음, 순회 종료')
+            break
+
+        hit_known = False
+        for post_id, post_url in entries:
+            if post_url in known_urls:
+                hit_known = True
+                break
+            new_entries.append((post_id, post_url))
+
+        if hit_known:
+            print(f'  → 기존 게시물 발견, 순회 종료')
+            break
+
+        page_num += 1
+        time.sleep(0.5)
+
+    new_entries.sort(key=lambda x: x[0], reverse=True)
+    return [url for _, url in new_entries]
 
 # ── 게시물 페이지 → 이미지 URL ────────────────────────────────────────────────
 
 def fetch_image_url(page, post_url: str) -> str | None:
     try:
         page.goto(post_url, wait_until='domcontentloaded', timeout=30000)
-        html   = page.content()
+        html = page.content()
     except Exception as e:
         print(f'  ✗ fetch 실패: {post_url} — {e}', file=sys.stderr)
         return None
@@ -119,7 +172,6 @@ def fetch_image_url(page, post_url: str) -> str | None:
         return _pick_largest(large)
 
     return None
-
 
 # ── 내부 유틸 ─────────────────────────────────────────────────────────────────
 
@@ -161,10 +213,17 @@ def _pick_largest(imgs: list[dict]) -> str:
             best = img
     return best['src']
 
-
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 
 def main():
+    existing, known_urls = load_existing()
+    is_first_run = len(existing) == 0
+
+    if is_first_run:
+        print('▶ 첫 실행 — 전체 게시물 수집 시작')
+    else:
+        print('▶ 증분 업데이트 — 새 게시물만 수집')
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(
@@ -176,37 +235,41 @@ def main():
         )
         page = context.new_page()
 
-        print('▶ 게시물 목록 가져오는 중…')
-        post_urls = fetch_post_urls(page)
-        print(f'  {len(post_urls)}개 게시물 발견')
+        new_post_urls = fetch_new_post_urls(page, known_urls)
+        print(f'\n  새 게시물: {len(new_post_urls)}개')
 
-        url_order = {url: i for i, url in enumerate(post_urls)}
-        results   = []
+        if not new_post_urls:
+            print('✅ 새 게시물 없음 — images.json 유지')
+            browser.close()
+            return
 
-        for i, post_url in enumerate(post_urls):
+        # 새 게시물 이미지 수집
+        new_results = []
+        for i, post_url in enumerate(new_post_urls):
             time.sleep(PAGE_DELAY)
             image_url = fetch_image_url(page, post_url)
             if image_url:
-                results.append({'image_url': image_url, 'post_url': post_url})
-                print(f'  ✓ [{i+1}/{len(post_urls)}] {post_url}')
+                new_results.append({'image_url': image_url, 'post_url': post_url})
+                print(f'  ✓ [{i+1}/{len(new_post_urls)}] {post_url}')
             else:
-                print(f'  ✗ [{i+1}/{len(post_urls)}] (이미지 없음) {post_url}',
+                print(f'  ✗ [{i+1}/{len(new_post_urls)}] (이미지 없음) {post_url}',
                       file=sys.stderr)
 
         browser.close()
 
-    results.sort(key=lambda x: url_order.get(x['post_url'], 9999))
+    # 새 결과를 기존 목록 앞에 붙이기 (최신순 유지)
+    merged = new_results + existing
 
     output = {
         'updated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'count':      len(results),
-        'images':     results,
+        'count':      len(merged),
+        'images':     merged,
     }
 
-    with open('images.json', 'w', encoding='utf-8') as f:
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f'\n✅ images.json 저장 완료 ({len(results)}개 이미지)')
+    print(f'\n✅ images.json 저장 완료 (총 {len(merged)}개 / 신규 {len(new_results)}개)')
 
 
 if __name__ == '__main__':
