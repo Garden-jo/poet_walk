@@ -42,6 +42,18 @@ def fetch_post_urls() -> list[str]:
     resp = session.get(LISTING_URL, headers={'Referer': LISTING_URL}, timeout=15)
     resp.raise_for_status()
 
+    # ── 디버그 ──
+    print(f'  HTTP {resp.status_code}, 최종 URL: {resp.url}')
+    soup_debug = BeautifulSoup(resp.text, 'html.parser')
+    title = soup_debug.find('title')
+    print(f'  페이지 타이틀: {title.text.strip() if title else "(없음)"}')
+    all_a = soup_debug.find_all('a', href=True)
+    print(f'  전체 <a> 태그 수: {len(all_a)}')
+    print(f'  처음 10개 href:')
+    for a in all_a[:10]:
+        print(f'    {a["href"]}')
+    # ── 디버그 끝 ──
+
     soup        = BeautifulSoup(resp.text, 'html.parser')
     base        = urlparse(resp.url)
     pretty_re   = re.compile(r'^' + re.escape(BOARD_PATH) + r'/(\d+)')
