@@ -22,7 +22,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4
+        run: |
+          pip install playwright beautifulsoup4
+          playwright install --with-deps chromium  
 
       - name: Run crawler
         run: python crawl.py
