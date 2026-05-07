@@ -52,6 +52,8 @@ def fetch_post_urls() -> list[str]:
     print(f'  처음 10개 href:')
     for a in all_a[:10]:
         print(f'    {a["href"]}')
+    print(f'  Content-Type: {resp.headers.get("Content-Type", "unknown")}')
+    print(f'  응답 앞 500자:\n{resp.text[:500]}')
     # ── 디버그 끝 ──
 
     soup        = BeautifulSoup(resp.text, 'html.parser')
